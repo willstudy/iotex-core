@@ -75,14 +75,13 @@ func init() {
 // CandidatesByHeightFunc defines a function to overwrite candidates
 type CandidatesByHeightFunc func(uint64) ([]*state.Candidate, error)
 type rollDPoSCtx struct {
-	cfg config.RollDPoS
+	consensusfsm.ConsensusConfig
 	// TODO: explorer dependency deleted at #1085, need to add api params here
 	chain            blockchain.Blockchain
 	actPool          actpool.ActPool
 	broadcastHandler scheme.Broadcast
 	roundCalc        *roundCalculator
 	eManagerDB       db.KVStore
-
 	encodedAddr string
 	priKey      crypto.PrivateKey
 	round       *roundCtx
@@ -92,10 +91,9 @@ type rollDPoSCtx struct {
 }
 
 func newRollDPoSCtx(
-	cfg config.RollDPoS,
+	cfg consensusfsm.ConsensusConfig,
 	consensusDBConfig config.DB,
 	active bool,
-	blockInterval time.Duration,
 	toleratedOvertime time.Duration,
 	timeBasedRotation bool,
 	chain blockchain.Blockchain,
@@ -119,14 +117,14 @@ func newRollDPoSCtx(
 	if candidatesByHeightFunc == nil {
 		candidatesByHeightFunc = chain.CandidatesByHeight
 	}
-	if cfg.FSM.AcceptBlockTTL+cfg.FSM.AcceptProposalEndorsementTTL+cfg.FSM.AcceptLockEndorsementTTL+cfg.FSM.CommitTTL > blockInterval {
+	if cfg.AcceptBlockTTL(0)+cfg.AcceptProposalEndorsementTTL(0)+cfg.AcceptLockEndorsementTTL(0)+cfg.CommitTTL(0) > cfg.BlockInterval(0) {
 		return nil, errors.Errorf(
 			"invalid ttl config, the sum of ttls should be equal to block interval. acceptBlockTTL %d, acceptProposalEndorsementTTL %d, acceptLockEndorsementTTL %d, commitTTL %d, blockInterval %d",
-			cfg.FSM.AcceptBlockTTL,
-			cfg.FSM.AcceptProposalEndorsementTTL,
-			cfg.FSM.AcceptLockEndorsementTTL,
-			cfg.FSM.CommitTTL,
-			blockInterval,
+			cfg.AcceptBlockTTL(0),
+			cfg.AcceptProposalEndorsementTTL(0),
+			cfg.AcceptLockEndorsementTTL(0),
+			cfg.CommitTTL(0),
+			cfg.BlockInterval(0),
 		)
 	}
 	var eManagerDB db.KVStore
@@ -134,7 +132,6 @@ func newRollDPoSCtx(
 		eManagerDB = db.NewBoltDB(consensusDBConfig)
 	}
 	roundCalc := &roundCalculator{
-		blockInterval:          blockInterval,
 		candidatesByHeightFunc: candidatesByHeightFunc,
 		chain:                  chain,
 		rp:                     rp,
@@ -142,7 +139,7 @@ func newRollDPoSCtx(
 		toleratedOvertime:      toleratedOvertime,
 	}
 	return &rollDPoSCtx{
-		cfg:              cfg,
+		ConsensusConfig:  cfg,
 		active:           active,
 		encodedAddr:      encodedAddr,
 		priKey:           priKey,
@@ -163,7 +160,7 @@ func (ctx *rollDPoSCtx) Start(c context.Context) (err error) {
 		}
 		eManager, err = newEndorsementManager(ctx.eManagerDB)
 	}
-	ctx.round, err = ctx.roundCalc.NewRoundWithToleration(0, ctx.clock.Now(), eManager)
+	ctx.round, err = ctx.roundCalc.NewRoundWithToleration(0, ctx.BlockInterval(0), ctx.clock.Now(), eManager)
 
 	return err
 }
@@ -211,22 +208,22 @@ func (ctx *rollDPoSCtx) CheckBlockProposer(
 	if err != nil {
 		return err
 	}
-	if ctx.roundCalc.Proposer(height, en.Timestamp()) != endorserAddr.String() {
+	if proposer := ctx.roundCalc.Proposer(height, ctx.BlockInterval(height), en.Timestamp()); proposer != endorserAddr.String() {
 		return errors.Errorf(
 			"%s is not proposer of the corresponding round, %s expected",
 			endorserAddr.String(),
-			ctx.roundCalc.Proposer(height, en.Timestamp()),
+			proposer,
 		)
 	}
 	proposerAddr := proposal.ProposerAddress()
-	if ctx.roundCalc.Proposer(height, proposal.block.Timestamp()) != proposerAddr {
+	if ctx.roundCalc.Proposer(height, ctx.BlockInterval(height), proposal.block.Timestamp()) != proposerAddr {
 		return errors.Errorf("%s is not proposer of the corresponding round", proposerAddr)
 	}
 	if !proposal.block.VerifySignature() {
 		return errors.Errorf("invalid block signature")
 	}
 	if proposerAddr != endorserAddr.String() {
-		round, err := ctx.roundCalc.NewRound(height, en.Timestamp(), nil)
+		round, err := ctx.roundCalc.NewRound(height, ctx.BlockInterval(height), en.Timestamp(), nil)
 		if err != nil {
 			return err
 		}
@@ -293,7 +290,7 @@ func (ctx *rollDPoSCtx) Prepare() error {
 	ctx.mutex.Lock()
 	defer ctx.mutex.Unlock()
 	height := ctx.chain.TipHeight() + 1
-	newRound, err := ctx.roundCalc.UpdateRound(ctx.round, height, ctx.clock.Now())
+	newRound, err := ctx.roundCalc.UpdateRound(ctx.round, height, ctx.BlockInterval(height), ctx.clock.Now())
 	if err != nil {
 		return err
 	}
@@ -391,7 +388,7 @@ func (ctx *rollDPoSCtx) NewProposalEndorsement(msg interface{}) (interface{}, er
 	return ctx.newEndorsement(
 		blockHash,
 		PROPOSAL,
-		ctx.round.StartTime().Add(ctx.cfg.FSM.AcceptBlockTTL),
+		ctx.round.StartTime().Add(ctx.AcceptBlockTTL(ctx.round.height)),
 	)
 }
 
@@ -414,7 +411,7 @@ func (ctx *rollDPoSCtx) NewLockEndorsement(
 				blkHash,
 				LOCK,
 				ctx.round.StartTime().Add(
-					ctx.cfg.FSM.AcceptBlockTTL+ctx.cfg.FSM.AcceptProposalEndorsementTTL,
+					ctx.AcceptBlockTTL(ctx.round.height)+ctx.AcceptProposalEndorsementTTL(ctx.round.height),
 				),
 			)
 		}
@@ -441,7 +438,7 @@ func (ctx *rollDPoSCtx) NewPreCommitEndorsement(
 			blkHash,
 			COMMIT,
 			ctx.round.StartTime().Add(
-				ctx.cfg.FSM.AcceptBlockTTL+ctx.cfg.FSM.AcceptProposalEndorsementTTL+ctx.cfg.FSM.AcceptLockEndorsementTTL,
+				ctx.AcceptBlockTTL(ctx.round.height)+ctx.AcceptProposalEndorsementTTL(ctx.round.height)+ctx.AcceptLockEndorsementTTL(ctx.round.height),
 			),
 		)
 	default:
@@ -470,7 +467,7 @@ func (ctx *rollDPoSCtx) Commit(msg interface{}) (bool, error) {
 	if err := pendingBlock.Finalize(
 		ctx.round.Endorsements(blkHash, []ConsensusVoteTopic{COMMIT}),
 		ctx.round.StartTime().Add(
-			ctx.cfg.FSM.AcceptBlockTTL+ctx.cfg.FSM.AcceptProposalEndorsementTTL+ctx.cfg.FSM.AcceptLockEndorsementTTL,
+			ctx.AcceptBlockTTL(ctx.round.height)+ctx.AcceptProposalEndorsementTTL(ctx.round.height)+ctx.AcceptLockEndorsementTTL(ctx.round.height),
 		),
 	); err != nil {
 		return false, errors.Wrap(err, "failed to add endorsements to block")
@@ -556,7 +553,7 @@ func (ctx *rollDPoSCtx) IsStaleUnmatchedEvent(evt *consensusfsm.ConsensusEvent) 
 	ctx.mutex.RLock()
 	defer ctx.mutex.RUnlock()
 
-	return ctx.clock.Now().Sub(evt.Timestamp()) > ctx.cfg.FSM.UnmatchedEventTTL
+	return ctx.clock.Now().Sub(evt.Timestamp()) > ctx.UnmatchedEventTTL(ctx.round.height)
 }
 
 func (ctx *rollDPoSCtx) Height() uint64 {
@@ -619,7 +616,8 @@ func (ctx *rollDPoSCtx) newConsensusEvent(
 ) *consensusfsm.ConsensusEvent {
 	switch ed := data.(type) {
 	case *EndorsedConsensusMessage:
-		roundNum, _, err := ctx.roundCalc.RoundInfo(ed.Height(), ed.Endorsement().Timestamp())
+		height := ed.Height()
+		roundNum, _, err := ctx.roundCalc.RoundInfo(height, ctx.BlockInterval(height), ed.Endorsement().Timestamp())
 		if err != nil {
 			ctx.logger().Error(
 				"failed to calculate round for generating consensus event",
