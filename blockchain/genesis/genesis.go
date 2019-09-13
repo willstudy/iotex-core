@@ -43,7 +43,7 @@ func defaultConfig() Genesis {
 			BlockGasLimit:         20000000,
 			ActionGasLimit:        5000000,
 			BlockInterval:         10 * time.Second,
-			NumSubEpochs:          2,
+			NumSubEpochs:          15,
 			NumDelegates:          24,
 			NumCandidateDelegates: 36,
 			TimeBasedRotation:     false,
