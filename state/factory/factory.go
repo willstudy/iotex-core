@@ -60,7 +60,7 @@ type (
 		RootHash() hash.Hash256
 		RootHashByHeight(uint64) (hash.Hash256, error)
 		Height() (uint64, error)
-		NewWorkingSet() (WorkingSet, error)
+		NewWorkingSet(bool) (WorkingSet, error)
 		Commit(WorkingSet) error
 		// Candidate pool
 		CandidatesByHeight(uint64) ([]*state.Candidate, error)
@@ -257,10 +257,10 @@ func (sf *factory) Height() (uint64, error) {
 	return byteutil.BytesToUint64(height), nil
 }
 
-func (sf *factory) NewWorkingSet() (WorkingSet, error) {
+func (sf *factory) NewWorkingSet(saveHistory bool) (WorkingSet, error) {
 	sf.mutex.RLock()
 	defer sf.mutex.RUnlock()
-	return NewWorkingSet(sf.currentChainHeight, sf.dao, sf.rootHash(), sf.actionHandlers)
+	return NewWorkingSet(sf.currentChainHeight, sf.dao, sf.rootHash(), sf.actionHandlers, saveHistory)
 }
 
 // Commit persists all changes in RunActions() into the DB

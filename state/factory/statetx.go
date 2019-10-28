@@ -9,8 +9,6 @@ package factory
 import (
 	"context"
 	"encoding/binary"
-	"strings"
-
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
 
@@ -40,6 +38,7 @@ var (
 type stateTX struct {
 	ver            uint64
 	blkHeight      uint64
+	saveHistory    bool
 	cb             db.CachedBatch // cached batch for pending writes
 	dao            db.KVStore     // the underlying DB for account/contract storage
 	actionHandlers []protocol.ActionHandler
@@ -53,9 +52,11 @@ func newStateTX(
 	kv db.KVStore,
 	actionHandlers []protocol.ActionHandler,
 	cfg config.DB,
+	saveHistory bool,
 ) *stateTX {
 	return &stateTX{
 		ver:            version,
+		saveHistory: saveHistory,
 		cb:             db.NewCachedBatch(),
 		dao:            kv,
 		actionHandlers: actionHandlers,
@@ -75,6 +76,8 @@ func (stx *stateTX) Version() uint64 { return stx.ver }
 
 // Height returns the Height of the block being worked on
 func (stx *stateTX) Height() uint64 { return stx.blkHeight }
+
+func (stx *stateTX) History() bool { return stx.saveHistory }
 
 // RunActions runs actions in the block and track pending changes in working set
 func (stx *stateTX) RunActions(
@@ -318,7 +321,9 @@ func (stx *stateTX) deleteHistory() error {
 	return nil
 }
 
-// SaveHistoryForTrie save history for trie node
+/*
+// TODOHISTORY: we can do processing according to stx.saveHistory flag
+// this SaveHistory() can be removed from WorkingSet interface
 func (stx *stateTX) SaveHistory(hei uint64, batch db.CachedBatch, chaindb db.KVStore) error {
 	trieBatch, ok := batch.(db.KVStoreBatch)
 	if !ok {
@@ -347,8 +352,9 @@ func (stx *stateTX) SaveHistory(hei uint64, batch db.CachedBatch, chaindb db.KVS
 	// commit to chain.db
 	return chaindb.Commit(heightToKeyCache)
 }
+*/
 
-// DeleteHistoryForTrie delete history asynchronous for trie node
+// DeleteHistory delete account/state history asynchronous
 func (stx *stateTX) DeleteHistory(hei uint64, chaindb db.KVStore) error {
 	if hei < stx.cfg.HistoryStateRetention {
 		return nil

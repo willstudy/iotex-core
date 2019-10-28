@@ -58,6 +58,7 @@ type (
 		dao              db.KVStore
 		cb               db.CachedBatch
 		hu               config.HeightUpgrade
+		saveHistory 	 bool
 	}
 )
 
@@ -68,6 +69,7 @@ func NewStateDBAdapter(
 	hu config.HeightUpgrade,
 	blockHeight uint64,
 	executionHash hash.Hash256,
+	saveHistory bool,
 ) *StateDBAdapter {
 	return &StateDBAdapter{
 		cm:               cm,
@@ -85,6 +87,7 @@ func NewStateDBAdapter(
 		dao:              sm.GetDB(),
 		cb:               sm.GetCachedBatch(),
 		hu:               hu,
+		saveHistory: saveHistory,
 	}
 }
 
@@ -691,13 +694,7 @@ func (stateDB *StateDBAdapter) getNewContract(addr hash.Hash160) (Contract, erro
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to load account state for address %x", addr)
 	}
-	isHudson := stateDB.hu.IsPost(config.History, stateDB.blockHeight)
-	var contract Contract
-	if isHudson {
-		contract, err = newContract(addr, account, stateDB.dao, stateDB.cb, true)
-	} else {
-		contract, err = newContract(addr, account, stateDB.dao, stateDB.cb, false)
-	}
+	contract, err := newContract(addr, account, stateDB.dao, stateDB.cb, stateDB.saveHistory)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to create storage trie for new contract %x", addr)
 	}

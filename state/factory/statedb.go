@@ -183,10 +183,10 @@ func (sdb *stateDB) Height() (uint64, error) {
 	return byteutil.BytesToUint64(height), nil
 }
 
-func (sdb *stateDB) NewWorkingSet() (WorkingSet, error) {
+func (sdb *stateDB) NewWorkingSet(saveHistory bool) (WorkingSet, error) {
 	sdb.mutex.RLock()
 	defer sdb.mutex.RUnlock()
-	return newStateTX(sdb.currentChainHeight, sdb.dao, sdb.actionHandlers, sdb.cfg), nil
+	return newStateTX(sdb.currentChainHeight, sdb.dao, sdb.actionHandlers, sdb.cfg, saveHistory), nil
 }
 
 // Commit persists all changes in RunActions() into the DB
