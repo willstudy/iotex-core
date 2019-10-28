@@ -228,6 +228,7 @@ type (
 
 		EnableFallBackToFreshDB bool `yaml:"enableFallbackToFreshDb"`
 		EnableTrielessStateDB   bool `yaml:"enableTrielessStateDB"`
+		EnableHistoryStateDB    bool `yaml:"enableHistoryStateDB"`
 		// EnableAsyncIndexWrite enables writing the block actions' and receipts' index asynchronously
 		EnableAsyncIndexWrite bool `yaml:"enableAsyncIndexWrite"`
 		// CompressBlock enables gzip compression on block data

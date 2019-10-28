@@ -182,8 +182,9 @@ type blockchain struct {
 	timerFactory  *prometheustimer.TimerFactory
 
 	// used by account-based model
-	sf factory.Factory
-
+	sf  factory.Factory
+	sf2 factory.Factory // for state history
+	deletingHistory chan struct{} // make sure there's only one goroutine deleting
 	registry *protocol.Registry
 }
 
@@ -206,6 +207,17 @@ func DefaultStateFactoryOption() Option {
 		}
 		if err != nil {
 			return errors.Wrapf(err, "Failed to create state factory")
+		}
+
+		if cfg.Chain.EnableHistoryStateDB {
+			if cfg.Chain.EnableTrielessStateDB {
+				bc.sf2, err = factory.NewStateDB(cfg, factory.DefaultHistoryDBOption())
+			} else {
+				bc.sf2, err = factory.NewFactory(cfg, factory.DefaultHistoryTrieOption())
+			}
+			if err != nil {
+				return errors.Wrapf(err, "Failed to create state factory")
+			}
 		}
 		return nil
 	}
@@ -295,8 +307,9 @@ func RegistryOption(registry *protocol.Registry) Option {
 func NewBlockchain(cfg config.Config, opts ...Option) Blockchain {
 	// create the Blockchain
 	chain := &blockchain{
-		config: cfg,
-		clk:    clock.New(),
+		config:          cfg,
+		clk:             clock.New(),
+		deletingHistory: make(chan struct{}, 1),
 	}
 	for _, opt := range opts {
 		if err := opt(chain, cfg); err != nil {
@@ -1049,7 +1062,7 @@ func (bc *blockchain) commitBlock(blk *block.Block) error {
 		}
 
 		sfTimer := bc.timerFactory.NewTimer("sf.Commit")
-		err := bc.sf.Commit(blk.WorkingSet)
+		err = bc.sf.Commit(blk.WorkingSet)
 		sfTimer.End()
 		// detach working set so it can be freed by GC
 		blk.WorkingSet = nil
@@ -1061,6 +1074,45 @@ func (bc *blockchain) commitBlock(blk *block.Block) error {
 
 	// emit block to all block subscribers
 	bc.emitToSubscribers(blk)
+
+	if bc.sf2 != nil {
+		// run actions with history retention
+		ws, err := bc.sf2.NewWorkingSet()
+		if err != nil {
+			return errors.Wrap(err, "Failed to obtain working set from state factory")
+		}
+		if _, err := bc.runActions(blk.RunnableActions(), ws); err != nil {
+			log.L().Panic("Failed to update state.", zap.Uint64("tipHeight", bc.tipHeight), zap.Error(err))
+		}
+		if err = bc.sf2.Commit(blk.WorkingSet); err != nil {
+			log.L().Panic("Error when committing states with history.", zap.Error(err))
+		}
+		// regularly check and purge history
+		if blk.Height() % factory.CheckHistoryDeleteInterval == 0 {
+			if err := bc.deleteHistory(); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (bc *blockchain) deleteHistory() error {
+	ws, err := bc.sf2.NewWorkingSet()
+	if err != nil {
+		return errors.Wrap(err, "Failed to obtain working set when deleting history")
+	}
+
+	go func() {
+		bc.deletingHistory <- struct{}{}
+		defer func() {
+			<-bc.deletingHistory
+		}()
+		err := ws.DeleteHistory(bc.tipHeight, ws.GetDB())
+		if err != nil {
+			log.L().Error("failed delete history for trie", zap.Error(err))
+		}
+	}()
 	return nil
 }
 
