@@ -9,6 +9,7 @@ package factory
 import (
 	"context"
 	"encoding/binary"
+	"strings"
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
 
@@ -205,7 +206,10 @@ func (stx *stateTX) PutState(pkHash hash.Hash160, s interface{}) error {
 		return errors.Wrapf(err, "failed to convert account %v to bytes", s)
 	}
 	stx.cb.Put(AccountKVNameSpace, pkHash[:], ss, "error when putting k = %x", pkHash)
-	return stx.putIndex(pkHash, ss)
+	if stx.saveHistory {
+		return stx.putIndex(pkHash, ss)
+	}
+	return nil
 }
 
 func (stx *stateTX) getMaxVersion(pkHash hash.Hash160) (index, height uint64, err error) {
@@ -321,11 +325,9 @@ func (stx *stateTX) deleteHistory() error {
 	return nil
 }
 
-/*
-// TODOHISTORY: we can do processing according to stx.saveHistory flag
-// this SaveHistory() can be removed from WorkingSet interface
-func (stx *stateTX) SaveHistory(hei uint64, batch db.CachedBatch, chaindb db.KVStore) error {
-	trieBatch, ok := batch.(db.KVStoreBatch)
+// SaveHistoryForTrie save history for trie node
+func (stx *stateTX) SaveHistoryForTrie(hei uint64) error {
+	trieBatch, ok := stx.cb.(db.KVStoreBatch)
 	if !ok {
 		log.L().Error("trieBatch,ok:=batch.(db.KVStoreBatch)")
 		return nil
@@ -342,7 +344,7 @@ func (stx *stateTX) SaveHistory(hei uint64, batch db.CachedBatch, chaindb db.KVS
 		if (write.WriteType() == db.Delete) && (strings.EqualFold(write.Namespace(), evm.ContractKVNameSpace)) {
 			heightTo := append(heightToTrieNodeKeyPrefix, heightBytes...)
 			heightTo = append(heightTo, write.Key()...)
-			heightToKeyCache.Put(heightToTrieNodeKeyNS, heightTo, []byte(""), "")
+			heightToKeyCache.Put(string(heightToTrieNodeKeyNS), heightTo, []byte(""), "")
 		}
 	}
 	if heightToKeyCache.Size() == 0 {
@@ -350,9 +352,8 @@ func (stx *stateTX) SaveHistory(hei uint64, batch db.CachedBatch, chaindb db.KVS
 	}
 	log.L().Info("len of history SaveDeletedTrieNode", zap.Int("heighttokey", heightToKeyCache.Size()))
 	// commit to chain.db
-	return chaindb.Commit(heightToKeyCache)
+	return stx.dao.Commit(heightToKeyCache)
 }
-*/
 
 // DeleteHistory delete account/state history asynchronous
 func (stx *stateTX) DeleteHistory(hei uint64, chaindb db.KVStore) error {
