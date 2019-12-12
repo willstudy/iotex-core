@@ -1262,3 +1262,87 @@ func TestActions(t *testing.T) {
 	)
 	require.NoError(val.Validate(ctx, blk))
 }
+
+func TestAddRemoveSubscriber(t *testing.T) {
+	testFunc := func(cfg config.Config, t *testing.T) {
+		require := require.New(t)
+		ctx := context.Background()
+
+		// Create a blockchain from scratch
+		sf, err := factory.NewFactory(cfg, factory.DefaultTrieOption())
+		require.NoError(err)
+		acc := account.NewProtocol(rewarding.DepositGas)
+		registry := protocol.NewRegistry()
+		require.NoError(acc.Register(registry))
+		rp := rolldpos.NewProtocol(cfg.Genesis.NumCandidateDelegates, cfg.Genesis.NumDelegates, cfg.Genesis.NumSubEpochs)
+		require.NoError(rp.Register(registry))
+		var indexer blockindex.Indexer
+		if _, gateway := cfg.Plugins[config.GatewayPlugin]; gateway && !cfg.Chain.EnableAsyncIndexWrite {
+			// create indexer
+			cfg.DB.DbPath = cfg.Chain.IndexDBPath
+			indexer, err = blockindex.NewIndexer(db.NewBoltDB(cfg.DB), cfg.Genesis.Hash())
+			require.NoError(err)
+		}
+		cfg.Genesis.InitBalanceMap[identityset.Address(27).String()] = unit.ConvertIotxToRau(20000000000).String()
+		// create BlockDAO
+		cfg.DB.DbPath = cfg.Chain.ChainDBPath
+		dao := blockdao.NewBlockDAO(db.NewBoltDB(cfg.DB), indexer, cfg.Chain.CompressBlock, cfg.DB)
+		require.NotNil(dao)
+		bc := NewBlockchain(
+			cfg,
+			dao,
+			sf,
+			RegistryOption(registry),
+		)
+		ep := execution.NewProtocol(dao.GetBlockHash)
+		require.NoError(ep.Register(registry))
+		bc.Validator().AddActionEnvelopeValidators(protocol.NewGenericValidator(sf.AccountState))
+		require.NoError(bc.Start(ctx))
+
+		ms := &MockSubscriber{counter: 0}
+		require.NoError(bc.AddSubscriber(ms))
+		require.Equal(0, ms.Counter())
+
+		addr0 := identityset.Address(27).String()
+		tsf0, err := testutil.SignedTransfer(addr0, identityset.PrivateKey(0), 1, big.NewInt(10), nil, testutil.TestGasLimit, big.NewInt(testutil.TestGasPriceInt64))
+		require.NoError(err)
+		accMap := make(map[string][]action.SealedEnvelope)
+		accMap[identityset.Address(0).String()] = []action.SealedEnvelope{tsf0}
+		blk, err := bc.MintNewBlock(
+			accMap,
+			testutil.TimestampNow(),
+		)
+		require.NoError(err)
+		require.NoError(bc.ValidateBlock(blk))
+		require.NoError(bc.CommitBlock(blk))
+		time.Sleep(1)
+		require.Equal(1, ms.Counter())
+
+		require.NoError(bc.RemoveSubscriber(ms))
+		require.NoError(bc.CommitBlock(blk))
+		require.NoError(bc.Stop(ctx))
+		require.Equal(1, ms.Counter())
+	}
+
+	testTrieFile, _ := ioutil.TempFile(os.TempDir(), "trie")
+	testTriePath := testTrieFile.Name()
+	testDBFile, _ := ioutil.TempFile(os.TempDir(), "db")
+	testDBPath := testDBFile.Name()
+	testIndexFile, _ := ioutil.TempFile(os.TempDir(), "index")
+	testIndexPath := testIndexFile.Name()
+	defer func() {
+		testutil.CleanupPath(t, testTriePath)
+		testutil.CleanupPath(t, testDBPath)
+		testutil.CleanupPath(t, testIndexPath)
+	}()
+
+	cfg := config.Default
+	cfg.Chain.TrieDBPath = testTriePath
+	cfg.Chain.ChainDBPath = testDBPath
+	cfg.Chain.IndexDBPath = testIndexPath
+	cfg.Genesis.EnableGravityChainVoting = false
+
+	t.Run("load blockchain from DB w/o explorer", func(t *testing.T) {
+		testFunc(cfg, t)
+	})
+}
